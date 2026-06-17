@@ -289,6 +289,50 @@ prisma/
   migrations/        # SQL migrations
 ```
 
+## Deployment (Render + Vercel)
+
+Split deploy: **Render** hosts the API, **Vercel** hosts the React client.
+
+### Render (backend)
+
+| Setting | Value |
+|---------|--------|
+| Root Directory | *(empty — repo root)* |
+| Build Command | `npm install --include=dev && npm run db:generate && npm run db:migrate:deploy && npm run build` |
+| Start Command | `npm run start` |
+| Health Check | `/api/health` |
+
+**Environment variables:**
+
+| Key | Value |
+|-----|--------|
+| `DATABASE_URL` | Neon pooled connection string |
+| `DIRECT_URL` | Neon direct connection string |
+| `CORS_ORIGIN` | Your Vercel URL(s), comma-separated |
+
+Example:
+
+```env
+CORS_ORIGIN=https://banking-ledger-system.vercel.app,https://banking-ledger-system-git-main.vercel.app
+```
+
+### Vercel (frontend)
+
+| Setting | Value |
+|---------|--------|
+| Root Directory | `client` |
+| Install Command | `npm install` |
+| Build Command | `npm run build` |
+| Output Directory | `dist` |
+
+**Environment variable:**
+
+| Key | Value | Environments |
+|-----|--------|--------------|
+| `VITE_API_URL` | `https://YOUR-RENDER-APP.onrender.com/api/v1` | Production, Preview |
+
+Local dev: leave `VITE_API_URL` unset — the client uses `/api/v1` and Vite proxies to `localhost:3001`.
+
 ## Trade-offs and known limitations
 
 | Topic | Choice | Limitation |

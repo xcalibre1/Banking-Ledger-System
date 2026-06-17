@@ -2,8 +2,10 @@ import { createApi, fetchBaseQuery } from "@reduxjs/toolkit/query/react";
 import type { ApiErrorBody } from "../../shared/types";
 import { TAG_TYPES } from "./tags";
 
+const apiBaseUrl = import.meta.env.VITE_API_URL ?? "/api/v1";
+
 const baseQuery = fetchBaseQuery({
-  baseUrl: "/api/v1",
+  baseUrl: apiBaseUrl,
   prepareHeaders: (headers) => {
     headers.set("Content-Type", "application/json");
     return headers;
