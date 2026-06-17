@@ -1,5 +1,5 @@
 import type { Decimal } from "decimal.js";
-import type { MoneyMovement } from "./reversal";
+import type { MoneyMovement } from "./money-movement";
 
 export interface TransferRequest {
   fromAccountId: string;

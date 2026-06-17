@@ -1,6 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma, type Transaction } from "@prisma/client";
-import type { Decimal } from "decimal.js";
+import { AuditWriterService } from "../common/services/audit-writer.service";
+import { IdempotencyReplayService } from "../common/services/idempotency-replay.service";
+import { isPrismaUniqueViolation } from "../common/utils/prisma-errors.util";
 import {
   formatMoney,
   toDecimal,
@@ -10,7 +12,6 @@ import {
   accountClosed,
   accountNotFound,
   DomainError,
-  idempotencyConflict,
   insufficientFunds,
   invalidRequest,
   isDomainError,
@@ -18,7 +19,7 @@ import {
   transactionNotFound,
 } from "../models/errors";
 import { mapMoneyMovement } from "../models/mappers";
-import type { ReverseRequest, ReverseResult } from "../models/reversal";
+import type { ReverseRequest, ReverseResult } from "../models/money-movement";
 import { AccountRepository } from "../repositories/account.repository";
 import { AuditRepository } from "../repositories/audit.repository";
 import { IdempotencyRepository } from "../repositories/idempotency.repository";
@@ -26,6 +27,8 @@ import { LedgerRepository } from "../repositories/ledger.repository";
 import { TransactionRepository } from "../repositories/transaction.repository";
 import type { DbClient } from "../prisma/prisma.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { ReverseResponseDto } from "./dto/reverse-response.dto";
+import { mapReverseResultToDto } from "./mappers/reversal.mapper";
 
 const REVERSE_IDEMPOTENCY_STATUS = 201;
 
@@ -38,9 +41,11 @@ export class ReversalService {
     private readonly ledgerRepository: LedgerRepository,
     private readonly auditRepository: AuditRepository,
     private readonly idempotencyRepository: IdempotencyRepository,
+    private readonly auditWriter: AuditWriterService,
+    private readonly idempotencyReplay: IdempotencyReplayService,
   ) {}
 
-  async reverse(request: ReverseRequest): Promise<ReverseResult> {
+  async reverse(request: ReverseRequest): Promise<ReverseResponseDto> {
     if (!request.idempotencyKey?.trim()) {
       throw invalidRequest("Idempotency-Key is required");
     }
@@ -48,58 +53,59 @@ export class ReversalService {
       throw invalidRequest("Request ID is required");
     }
 
-    const cached = await this.idempotencyRepository.findByKey(
+    const cached = await this.idempotencyReplay.findCached(
       request.idempotencyKey,
     );
     if (cached) {
-      return this.handleIdempotentReplay(cached, request.transactionId);
+      return mapReverseResultToDto(
+        this.idempotencyReplay.replayReverse(cached, request.transactionId),
+      );
     }
 
     try {
-      return await this.prisma.$transaction(async (tx) => {
-        const existingByKey =
-          await this.transactionRepository.findByIdempotencyKey(
-            tx,
-            request.idempotencyKey,
-          );
-        if (existingByKey?.reversesTransactionId) {
-          return this.buildResult(
-            tx,
-            existingByKey.reversesTransactionId,
-            existingByKey,
-            true,
-          );
-        }
+      const result = await this.executeReverse(request);
+      return mapReverseResultToDto(result);
+    } catch (error) {
+      const raced = await this.resolveIdempotencyRace(request, error);
+      if (raced) {
+        return mapReverseResultToDto(raced);
+      }
 
-        const original = await this.transactionRepository.lockTransactionForUpdate(
+      if (isDomainError(error)) {
+        await this.writeReverseFailureAudit(request, error);
+      }
+      throw error;
+    }
+  }
+
+  private async executeReverse(request: ReverseRequest): Promise<ReverseResult> {
+    return this.prisma.$transaction(async (tx) => {
+      const existingByKey =
+        await this.transactionRepository.findByIdempotencyKey(
           tx,
-          request.transactionId,
+          request.idempotencyKey,
         );
-        if (!original) {
-          throw transactionNotFound(request.transactionId);
-        }
+      if (existingByKey?.reversesTransactionId) {
+        return this.buildResult(
+          tx,
+          existingByKey.reversesTransactionId,
+          existingByKey,
+          true,
+        );
+      }
 
-        if (original.type !== "transfer") {
-          throw notReversible("Only completed transfers can be reversed");
-        }
-        if (original.status === "reversed") {
-          const existingReversal =
-            await this.transactionRepository.findReversalForOriginal(
-              tx,
-              original.id,
-            );
-          if (existingReversal) {
-            return this.buildResult(tx, original.id, existingReversal, true);
-          }
-          throw notReversible("Transfer is already reversed");
-        }
-        if (original.status !== "completed") {
-          throw notReversible("Only completed transfers can be reversed");
-        }
-        if (!original.fromAccountId || !original.toAccountId) {
-          throw notReversible("Transfer is missing account references");
-        }
+      const original = await this.transactionRepository.lockTransactionForUpdate(
+        tx,
+        request.transactionId,
+      );
+      if (!original) {
+        throw transactionNotFound(request.transactionId);
+      }
 
+      if (original.type !== "transfer") {
+        throw notReversible("Only completed transfers can be reversed");
+      }
+      if (original.status === "reversed") {
         const existingReversal =
           await this.transactionRepository.findReversalForOriginal(
             tx,
@@ -108,150 +114,148 @@ export class ReversalService {
         if (existingReversal) {
           return this.buildResult(tx, original.id, existingReversal, true);
         }
+        throw notReversible("Transfer is already reversed");
+      }
+      if (original.status !== "completed") {
+        throw notReversible("Only completed transfers can be reversed");
+      }
+      if (!original.fromAccountId || !original.toAccountId) {
+        throw notReversible("Transfer is missing account references");
+      }
 
-        const amount = toDecimal(original.amount);
-        const prismaAmount = toPrismaDecimal(amount);
-
-        const lockedAccounts = await this.accountRepository.lockAccountsForUpdate(
+      const existingReversal =
+        await this.transactionRepository.findReversalForOriginal(
           tx,
-          original.fromAccountId,
-          original.toAccountId,
+          original.id,
         );
+      if (existingReversal) {
+        return this.buildResult(tx, original.id, existingReversal, true);
+      }
 
-        const source = lockedAccounts.get(original.fromAccountId);
-        const destination = lockedAccounts.get(original.toAccountId);
+      const amount = toDecimal(original.amount);
+      const prismaAmount = toPrismaDecimal(amount);
 
-        if (!source) {
-          throw accountNotFound(original.fromAccountId);
-        }
-        if (!destination) {
-          throw accountNotFound(original.toAccountId);
-        }
-        if (source.status === "closed") {
-          throw accountClosed(original.fromAccountId);
-        }
-        if (destination.status === "closed") {
-          throw accountClosed(original.toAccountId);
-        }
-        if (destination.balance.lt(amount)) {
-          throw insufficientFunds(
-            formatMoney(destination.balance),
-            formatMoney(amount),
-          );
-        }
+      const lockedAccounts = await this.accountRepository.lockAccountsForUpdate(
+        tx,
+        original.fromAccountId,
+        original.toAccountId,
+      );
 
-        await this.accountRepository.creditBalance(
-          tx,
-          original.fromAccountId,
-          prismaAmount,
+      const source = lockedAccounts.get(original.fromAccountId);
+      const destination = lockedAccounts.get(original.toAccountId);
+
+      if (!source) {
+        throw accountNotFound(original.fromAccountId);
+      }
+      if (!destination) {
+        throw accountNotFound(original.toAccountId);
+      }
+      if (source.status === "closed") {
+        throw accountClosed(original.fromAccountId);
+      }
+      if (destination.status === "closed") {
+        throw accountClosed(original.toAccountId);
+      }
+      if (destination.balance.lt(amount)) {
+        throw insufficientFunds(
+          formatMoney(destination.balance),
+          formatMoney(amount),
         );
-        await this.accountRepository.debitBalance(
-          tx,
-          original.toAccountId,
-          prismaAmount,
-        );
+      }
 
-        const reversal = await this.transactionRepository.createCompletedReversal(
-          tx,
-          {
-            fromAccountId: original.fromAccountId,
-            toAccountId: original.toAccountId,
-            amount,
-            originalTransactionId: original.id,
-            idempotencyKey: request.idempotencyKey,
-          },
-        );
+      await this.accountRepository.creditBalance(
+        tx,
+        original.fromAccountId,
+        prismaAmount,
+      );
+      await this.accountRepository.debitBalance(
+        tx,
+        original.toAccountId,
+        prismaAmount,
+      );
 
-        await this.ledgerRepository.createReversalEntries(tx, {
-          transactionId: reversal.id,
+      const reversal = await this.transactionRepository.createCompletedReversal(
+        tx,
+        {
           fromAccountId: original.fromAccountId,
           toAccountId: original.toAccountId,
           amount,
-        });
-
-        await this.transactionRepository.markReversed(tx, original.id);
-
-        await this.auditRepository.createInTransaction(tx, {
-          operationType: "REVERSE",
-          outcome: "success",
-          requestId: request.requestId,
-          fromAccountId: original.fromAccountId,
-          toAccountId: original.toAccountId,
-          amount,
-          transactionId: reversal.id,
+          originalTransactionId: original.id,
           idempotencyKey: request.idempotencyKey,
-          payload: {
-            originalTransactionId: original.id,
-            amount: formatMoney(amount),
-          },
-        });
+        },
+      );
 
-        const result = await this.buildResult(tx, original.id, reversal, false);
-
-        await this.idempotencyRepository.saveInTransaction(tx, {
-          key: request.idempotencyKey,
-          operation: "reverse",
-          responseStatus: REVERSE_IDEMPOTENCY_STATUS,
-          responseBody: JSON.parse(
-            JSON.stringify(result),
-          ) as Prisma.InputJsonValue,
-        });
-
-        return result;
+      await this.ledgerRepository.createReversalEntries(tx, {
+        transactionId: reversal.id,
+        fromAccountId: original.fromAccountId,
+        toAccountId: original.toAccountId,
+        amount,
       });
-    } catch (error) {
-      if (
-        error instanceof Prisma.PrismaClientKnownRequestError &&
-        error.code === "P2002"
-      ) {
-        const existing = await this.transactionRepository.findByIdempotencyKey(
-          this.prisma,
-          request.idempotencyKey,
-        );
-        if (existing?.reversesTransactionId) {
-          return this.buildResult(
-            this.prisma,
-            existing.reversesTransactionId,
-            existing,
-            true,
-          );
-        }
-        const cachedRetry = await this.idempotencyRepository.findByKey(
-          request.idempotencyKey,
-        );
-        if (cachedRetry) {
-          return this.handleIdempotentReplay(
-            cachedRetry,
-            request.transactionId,
-          );
-        }
-      }
 
-      if (isDomainError(error)) {
-        await this.auditFailure(request, error);
-      }
-      throw error;
-    }
+      await this.transactionRepository.markReversed(tx, original.id);
+
+      await this.auditRepository.createInTransaction(tx, {
+        operationType: "REVERSE",
+        outcome: "success",
+        requestId: request.requestId,
+        fromAccountId: original.fromAccountId,
+        toAccountId: original.toAccountId,
+        amount,
+        transactionId: reversal.id,
+        idempotencyKey: request.idempotencyKey,
+        payload: {
+          originalTransactionId: original.id,
+          amount: formatMoney(amount),
+        },
+      });
+
+      const result = await this.buildResult(tx, original.id, reversal, false);
+
+      await this.idempotencyRepository.saveInTransaction(tx, {
+        key: request.idempotencyKey,
+        operation: "reverse",
+        responseStatus: REVERSE_IDEMPOTENCY_STATUS,
+        responseBody: JSON.parse(
+          JSON.stringify(result),
+        ) as Prisma.InputJsonValue,
+      });
+
+      return result;
+    });
   }
 
-  private async handleIdempotentReplay(
-    cached: { operation: string; responseBody: unknown },
-    transactionId: string,
-  ): Promise<ReverseResult> {
-    if (cached.operation !== "reverse") {
-      throw idempotencyConflict();
+  private async resolveIdempotencyRace(
+    request: ReverseRequest,
+    error: unknown,
+  ): Promise<ReverseResult | null> {
+    if (!isPrismaUniqueViolation(error)) {
+      return null;
     }
 
-    const body = cached.responseBody as ReverseResult | null;
-    if (!body?.reversal || !body.originalTransaction) {
-      throw idempotencyConflict();
+    const existing = await this.transactionRepository.findByIdempotencyKey(
+      this.prisma,
+      request.idempotencyKey,
+    );
+    if (existing?.reversesTransactionId) {
+      return this.buildResult(
+        this.prisma,
+        existing.reversesTransactionId,
+        existing,
+        true,
+      );
     }
 
-    if (body.originalTransaction.id !== transactionId) {
-      throw idempotencyConflict();
+    const cachedRetry = await this.idempotencyReplay.findCached(
+      request.idempotencyKey,
+    );
+    if (cachedRetry) {
+      return this.idempotencyReplay.replayReverse(
+        cachedRetry,
+        request.transactionId,
+      );
     }
 
-    return { ...body, idempotentReplay: true };
+    return null;
   }
 
   private async buildResult(
@@ -272,12 +276,12 @@ export class ReversalService {
     };
   }
 
-  private async auditFailure(
+  private writeReverseFailureAudit(
     request: ReverseRequest,
     error: DomainError,
   ): Promise<void> {
-    try {
-      await this.auditRepository.createStandalone({
+    return this.auditWriter.writeFailure(
+      {
         operationType: "REVERSE",
         outcome: "failure",
         requestId: request.requestId,
@@ -286,9 +290,8 @@ export class ReversalService {
         errorCode: error.code,
         errorMessage: error.message,
         payload: { transactionId: request.transactionId },
-      });
-    } catch (auditError) {
-      console.error("Failed to write reversal failure audit event", auditError);
-    }
+      },
+      "reversal failure",
+    );
   }
 }

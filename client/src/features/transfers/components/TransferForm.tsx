@@ -1,20 +1,11 @@
 import { useState } from "react";
-import { useGetAccountsQuery } from "../../accounts/api/accountsApi";
-import { useCreateTransferMutation } from "../api/transfersApi";
-import { Alert } from "../../../shared/components/Alert";
-import { newIdempotencyKey } from "../../../shared/utils/idempotency";
-
-function getErrorMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof error.message === "string"
-  ) {
-    return error.message;
-  }
-  return "Transfer failed";
-}
+import { useGetAccountsQuery } from "@/features/accounts/api/accountsApi";
+import { useCreateTransferMutation } from "@/features/transfers/api/transfersApi";
+import { Alert } from "@/shared/components/Alert";
+import { MESSAGES } from "@/shared/constants/messages";
+import { formatMoney, formatMoneyWithBalance } from "@/shared/utils/formatMoney";
+import { getErrorMessage } from "@/shared/utils/getErrorMessage";
+import { newIdempotencyKey } from "@/shared/utils/idempotency";
 
 export function TransferForm() {
   const { data } = useGetAccountsQuery();
@@ -40,13 +31,13 @@ export function TransferForm() {
       }).unwrap();
 
       const message = result.idempotentReplay
-        ? "Transfer already processed (idempotent replay)."
-        : `Transferred $${result.transaction.amount} successfully.`;
+        ? MESSAGES.transferIdempotentReplay
+        : `Transferred ${formatMoney(result.transaction.amount)} successfully.`;
 
       setSuccess(message);
       setAmount("");
     } catch {
-      // Error surfaced via RTK Query `error` state.
+      // RTK Query surfaces errors via `error` state.
     }
   }
 
@@ -68,7 +59,7 @@ export function TransferForm() {
               <option value="">Select source account</option>
               {activeAccounts.map((account) => (
                 <option key={account.id} value={account.id}>
-                  {account.name} (${account.balance})
+                  {formatMoneyWithBalance(account.name, account.balance)}
                 </option>
               ))}
             </select>
@@ -84,7 +75,7 @@ export function TransferForm() {
               <option value="">Select destination account</option>
               {activeAccounts.map((account) => (
                 <option key={account.id} value={account.id}>
-                  {account.name} (${account.balance})
+                  {formatMoneyWithBalance(account.name, account.balance)}
                 </option>
               ))}
             </select>
@@ -99,7 +90,12 @@ export function TransferForm() {
               required
             />
           </div>
-          {error && <Alert variant="error" message={getErrorMessage(error)} />}
+          {error && (
+            <Alert
+              variant="error"
+              message={getErrorMessage(error, "Transfer failed")}
+            />
+          )}
           {success && <Alert variant="success" message={success} />}
           <button type="submit" className="btn btn-primary" disabled={isLoading}>
             {isLoading ? "Transferring…" : "Transfer"}

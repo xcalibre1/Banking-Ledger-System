@@ -11,13 +11,13 @@ import {
 import { Response } from "express";
 import { IdempotencyKey } from "../common/decorators/idempotency-key.decorator";
 import { RequestId } from "../common/decorators/request-id.decorator";
-import { invalidRequest } from "../models/errors";
+import {
+  requireIdempotencyKey,
+  setCreatedUnlessIdempotentReplay,
+} from "../common/utils/idempotency-http.util";
+import { ReverseTransactionDto } from "./dto/reverse-transaction.dto";
 import { ReversalService } from "./reversal.service";
 import { TransactionsService } from "./transactions.service";
-
-class ReverseTransactionDto {
-  idempotencyKey?: string;
-}
 
 @Controller("api/v1/transactions")
 export class TransactionsController {
@@ -40,20 +40,15 @@ export class TransactionsController {
     @RequestId() requestId: string,
     @Res({ passthrough: true }) res: Response,
   ) {
-    if (!idempotencyKey) {
-      throw invalidRequest("Idempotency-Key is required");
-    }
+    const key = requireIdempotencyKey(idempotencyKey);
 
     const result = await this.reversalService.reverse({
       transactionId,
-      idempotencyKey,
+      idempotencyKey: key,
       requestId,
     });
 
-    if (!result.idempotentReplay) {
-      res.status(201);
-    }
-
+    setCreatedUnlessIdempotentReplay(res, result.idempotentReplay);
     return result;
   }
 }

@@ -1,32 +1,18 @@
 import { useState } from "react";
-import { useGetAccountsQuery } from "../../accounts/api/accountsApi";
+import { useGetAccountsQuery } from "@/features/accounts/api/accountsApi";
 import {
   useGetTransactionsQuery,
   useReverseTransactionMutation,
-} from "../api/transactionsApi";
-import { Alert } from "../../../shared/components/Alert";
-import { StatusBadge } from "../../../shared/components/StatusBadge";
-import { accountLabel } from "../../../shared/utils/accountLabel";
-import { newIdempotencyKey } from "../../../shared/utils/idempotency";
-
-function getErrorMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof error.message === "string"
-  ) {
-    return error.message;
-  }
-  return "Request failed";
-}
-
-function transactionItemClass(status: string): string {
-  const normalized = status.toLowerCase();
-  const allowed = ["completed", "reversed", "failed", "pending"];
-  const variant = allowed.includes(normalized) ? normalized : "failed";
-  return `transaction-item transaction-item--${variant}`;
-}
+} from "@/features/transactions/api/transactionsApi";
+import { Alert } from "@/shared/components/Alert";
+import { CardToolbar } from "@/shared/components/CardToolbar";
+import { StatusBadge } from "@/shared/components/StatusBadge";
+import { MESSAGES } from "@/shared/constants/messages";
+import { transactionItemClass } from "@/shared/constants/status";
+import { accountLabel } from "@/shared/utils/accountLabel";
+import { formatMoney } from "@/shared/utils/formatMoney";
+import { getErrorMessage } from "@/shared/utils/getErrorMessage";
+import { newIdempotencyKey } from "@/shared/utils/idempotency";
 
 export function TransactionHistory() {
   const { data: accountsData } = useGetAccountsQuery();
@@ -58,11 +44,12 @@ export function TransactionHistory() {
       }).unwrap();
 
       const message = result.idempotentReplay
-        ? "Reversal already applied (idempotent replay)."
-        : `Reversed transfer of $${result.originalTransaction.amount}.`;
+        ? MESSAGES.reversalIdempotentReplay
+        : `Reversed transfer of ${formatMoney(result.originalTransaction.amount)}.`;
+
       setSuccess(message);
     } catch (error) {
-      setActionError(getErrorMessage(error));
+      setActionError(getErrorMessage(error, "Reversal failed"));
     } finally {
       setReversingId(null);
     }
@@ -70,20 +57,17 @@ export function TransactionHistory() {
 
   return (
     <section className="card layout-wide">
-      <div className="toolbar">
-        <h2>Recent transfers</h2>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={() => void refetch()}
-          disabled={isFetching}
-        >
-          Refresh
-        </button>
-      </div>
+      <CardToolbar
+        title="Recent transfers"
+        onRefresh={() => void refetch()}
+        isRefreshing={isFetching}
+      />
 
       {loadError && (
-        <Alert variant="error" message={getErrorMessage(loadError)} />
+        <Alert
+          variant="error"
+          message={getErrorMessage(loadError, "Failed to load transactions")}
+        />
       )}
       {actionError && <Alert variant="error" message={actionError} />}
       {success && <Alert variant="success" message={success} />}
@@ -102,7 +86,7 @@ export function TransactionHistory() {
               <div className="transaction-main">
                 <div className="transaction-details">
                   <div className="transaction-amount">
-                    ${transaction.amount}
+                    {formatMoney(transaction.amount)}
                   </div>
                   <div className="transaction-route">
                     <span>

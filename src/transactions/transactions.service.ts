@@ -3,6 +3,7 @@ import { mapMoneyMovement } from "../models/mappers";
 import { AccountRepository } from "../repositories/account.repository";
 import { TransactionRepository } from "../repositories/transaction.repository";
 import { TransactionListResponseDto } from "./dto/transaction-response.dto";
+import { mapMoneyMovementToDto } from "./mappers/transaction.mapper";
 
 @Injectable()
 export class TransactionsService {
@@ -22,15 +23,18 @@ export class TransactionsService {
     );
 
     return {
-      transactions: records.map((record) => ({
-        ...mapMoneyMovement(record),
-        fromAccountName: record.fromAccountId
-          ? (nameById.get(record.fromAccountId) ?? null)
-          : null,
-        toAccountName: record.toAccountId
-          ? (nameById.get(record.toAccountId) ?? null)
-          : null,
-      })),
+      transactions: records.map((record) => {
+        const movement = mapMoneyMovement(record);
+        return {
+          ...mapMoneyMovementToDto(movement),
+          fromAccountName: record.fromAccountId
+            ? (nameById.get(record.fromAccountId) ?? null)
+            : null,
+          toAccountName: record.toAccountId
+            ? (nameById.get(record.toAccountId) ?? null)
+            : null,
+        };
+      }),
     };
   }
 }

@@ -1,18 +1,9 @@
-import { useGetAccountsQuery } from "../api/accountsApi";
-import { Alert } from "../../../shared/components/Alert";
-import { StatusBadge } from "../../../shared/components/StatusBadge";
-
-function getErrorMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof error.message === "string"
-  ) {
-    return error.message;
-  }
-  return "Failed to load accounts";
-}
+import { useGetAccountsQuery } from "@/features/accounts/api/accountsApi";
+import { Alert } from "@/shared/components/Alert";
+import { CardToolbar } from "@/shared/components/CardToolbar";
+import { StatusBadge } from "@/shared/components/StatusBadge";
+import { formatMoney } from "@/shared/utils/formatMoney";
+import { getErrorMessage } from "@/shared/utils/getErrorMessage";
 
 export function AccountList() {
   const { data, isLoading, isFetching, error, refetch } = useGetAccountsQuery();
@@ -20,19 +11,18 @@ export function AccountList() {
 
   return (
     <section className="card">
-      <div className="toolbar">
-        <h2>Accounts</h2>
-        <button
-          type="button"
-          className="btn btn-secondary"
-          onClick={() => void refetch()}
-          disabled={isFetching}
-        >
-          Refresh
-        </button>
-      </div>
+      <CardToolbar
+        title="Accounts"
+        onRefresh={() => void refetch()}
+        isRefreshing={isFetching}
+      />
 
-      {error && <Alert variant="error" message={getErrorMessage(error)} />}
+      {error && (
+        <Alert
+          variant="error"
+          message={getErrorMessage(error, "Failed to load accounts")}
+        />
+      )}
 
       {isLoading ? (
         <p className="empty">Loading accounts…</p>
@@ -46,7 +36,7 @@ export function AccountList() {
                 <strong>{account.name}</strong>
                 <StatusBadge status={account.status} kind="account" />
               </div>
-              <div className="balance">${account.balance}</div>
+              <div className="balance">{formatMoney(account.balance)}</div>
             </li>
           ))}
         </ul>

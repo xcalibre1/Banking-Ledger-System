@@ -8,7 +8,10 @@ import {
 import { Response } from "express";
 import { IdempotencyKey } from "../common/decorators/idempotency-key.decorator";
 import { RequestId } from "../common/decorators/request-id.decorator";
-import { invalidRequest } from "../models/errors";
+import {
+  requireIdempotencyKey,
+  setCreatedUnlessIdempotentReplay,
+} from "../common/utils/idempotency-http.util";
 import { CreateTransferDto } from "./dto/create-transfer.dto";
 import { TransfersService } from "./transfers.service";
 
@@ -24,22 +27,17 @@ export class TransfersController {
     @RequestId() requestId: string,
     @Res({ passthrough: true }) res: Response,
   ) {
-    if (!idempotencyKey) {
-      throw invalidRequest("Idempotency-Key is required");
-    }
+    const key = requireIdempotencyKey(idempotencyKey);
 
     const result = await this.transfersService.transfer({
       fromAccountId: dto.fromAccountId,
       toAccountId: dto.toAccountId,
       amount: dto.amount,
-      idempotencyKey,
+      idempotencyKey: key,
       requestId,
     });
 
-    if (!result.idempotentReplay) {
-      res.status(201);
-    }
-
+    setCreatedUnlessIdempotentReplay(res, result.idempotentReplay);
     return result;
   }
 }

@@ -1,10 +1,8 @@
 import { Injectable } from "@nestjs/common";
 import { formatMoney, parseAndValidateAmount, toDecimal } from "../lib/money";
-import {
-  DomainError,
-  invalidRequest,
-} from "../models/errors";
-import type { Account } from "../models/account";
+import { DomainError, invalidRequest } from "../models/errors";
+import { AuditWriterService } from "../common/services/audit-writer.service";
+import { mapAccountToResponse } from "./mappers/account.mapper";
 import { AccountRepository } from "../repositories/account.repository";
 import { AuditRepository } from "../repositories/audit.repository";
 import { PrismaService } from "../prisma/prisma.service";
@@ -20,11 +18,12 @@ export class AccountsService {
     private readonly accountRepository: AccountRepository,
     private readonly prisma: PrismaService,
     private readonly auditRepository: AuditRepository,
+    private readonly auditWriter: AuditWriterService,
   ) {}
 
   async findAll(): Promise<AccountsListResponseDto> {
     const accounts = await this.accountRepository.listAll();
-    return { accounts: accounts.map((account) => this.toResponse(account)) };
+    return { accounts: accounts.map(mapAccountToResponse) };
   }
 
   async create(
@@ -34,7 +33,7 @@ export class AccountsService {
     const name = dto.name?.trim();
     if (!name) {
       const error = invalidRequest("Account name is required");
-      await this.auditFailure({
+      await this.writeCreateFailureAudit({
         requestId,
         error,
         name: dto.name,
@@ -52,7 +51,7 @@ export class AccountsService {
       const error = invalidRequest(
         parseError instanceof Error ? parseError.message : "Invalid initial balance",
       );
-      await this.auditFailure({
+      await this.writeCreateFailureAudit({
         requestId,
         error,
         name,
@@ -63,7 +62,7 @@ export class AccountsService {
 
     if (initialBalance.isNegative()) {
       const error = invalidRequest("Initial balance cannot be negative");
-      await this.auditFailure({
+      await this.writeCreateFailureAudit({
         requestId,
         error,
         name,
@@ -93,27 +92,18 @@ export class AccountsService {
       return created;
     });
 
-    return this.toResponse(account);
+    return mapAccountToResponse(account);
   }
 
-  private toResponse(account: Account): AccountResponseDto {
-    return {
-      id: account.id,
-      name: account.name,
-      balance: account.balance.toFixed(2),
-      status: account.status,
-    };
-  }
-
-  private async auditFailure(params: {
+  private writeCreateFailureAudit(params: {
     requestId: string;
     error: DomainError;
     name?: string;
     initialBalance?: string;
     amount?: import("decimal.js").Decimal;
   }): Promise<void> {
-    try {
-      await this.auditRepository.createStandalone({
+    return this.auditWriter.writeFailure(
+      {
         operationType: "CREATE_ACCOUNT",
         outcome: "failure",
         requestId: params.requestId,
@@ -124,9 +114,8 @@ export class AccountsService {
           name: params.name ?? null,
           initialBalance: params.initialBalance ?? null,
         },
-      });
-    } catch (auditError) {
-      console.error("Failed to write account creation failure audit event", auditError);
-    }
+      },
+      "account creation failure",
+    );
   }
 }

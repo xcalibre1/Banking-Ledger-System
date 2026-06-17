@@ -3,7 +3,7 @@ export * from "./models/audit";
 export * from "./models/errors";
 export * from "./models/mappers";
 export * from "./models/transfer";
-export * from "./models/reversal";
+export * from "./models/money-movement";
 
 export * from "./repositories/account.repository";
 export * from "./repositories/audit.repository";

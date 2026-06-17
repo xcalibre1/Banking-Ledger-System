@@ -1,6 +1,12 @@
 import { Injectable } from "@nestjs/common";
 import { Prisma, type Transaction } from "@prisma/client";
 import type { Decimal } from "decimal.js";
+import { AuditWriterService } from "../common/services/audit-writer.service";
+import { IdempotencyReplayService } from "../common/services/idempotency-replay.service";
+import {
+  isDeadlock,
+  isPrismaUniqueViolation,
+} from "../common/utils/prisma-errors.util";
 import {
   formatMoney,
   parseAndValidateAmount,
@@ -11,7 +17,6 @@ import {
   accountClosed,
   accountNotFound,
   DomainError,
-  idempotencyConflict,
   insufficientFunds,
   invalidRequest,
   isDomainError,
@@ -26,6 +31,8 @@ import { LedgerRepository } from "../repositories/ledger.repository";
 import { TransactionRepository } from "../repositories/transaction.repository";
 import type { DbClient } from "../prisma/prisma.service";
 import { PrismaService } from "../prisma/prisma.service";
+import { TransferResponseDto } from "./dto/transfer-response.dto";
+import { mapTransferResultToDto } from "./mappers/transfer.mapper";
 
 const TRANSFER_IDEMPOTENCY_STATUS = 201;
 const MAX_DEADLOCK_RETRIES = 3;
@@ -39,9 +46,11 @@ export class TransfersService {
     private readonly ledgerRepository: LedgerRepository,
     private readonly auditRepository: AuditRepository,
     private readonly idempotencyRepository: IdempotencyRepository,
+    private readonly auditWriter: AuditWriterService,
+    private readonly idempotencyReplay: IdempotencyReplayService,
   ) {}
 
-  async transfer(request: TransferRequest): Promise<TransferResult> {
+  async transfer(request: TransferRequest): Promise<TransferResponseDto> {
     this.validateRequestShape(request);
 
     let amount: Decimal;
@@ -54,46 +63,35 @@ export class TransfersService {
     }
 
     if (request.fromAccountId === request.toAccountId) {
-      await this.auditFailure(request, sameAccountTransfer());
+      await this.writeTransferFailureAudit(request, sameAccountTransfer());
       throw sameAccountTransfer();
     }
 
-    const cached = await this.idempotencyRepository.findByKey(
+    const cached = await this.idempotencyReplay.findCached(
       request.idempotencyKey,
     );
     if (cached) {
-      return this.handleIdempotentReplay(cached, request);
+      return mapTransferResultToDto(
+        this.idempotencyReplay.replayTransfer(cached, request),
+      );
     }
 
     for (let attempt = 0; attempt < MAX_DEADLOCK_RETRIES; attempt++) {
       try {
-        return await this.executeTransfer(request, amount);
+        const result = await this.executeTransfer(request, amount);
+        return mapTransferResultToDto(result);
       } catch (error) {
-        if (this.isDeadlock(error) && attempt < MAX_DEADLOCK_RETRIES - 1) {
+        if (isDeadlock(error) && attempt < MAX_DEADLOCK_RETRIES - 1) {
           continue;
         }
 
-        if (
-          error instanceof Prisma.PrismaClientKnownRequestError &&
-          error.code === "P2002"
-        ) {
-          const existing = await this.transactionRepository.findByIdempotencyKey(
-            this.prisma,
-            request.idempotencyKey,
-          );
-          if (existing) {
-            return this.buildResultFromTransaction(this.prisma, existing, true);
-          }
-          const cachedRetry = await this.idempotencyRepository.findByKey(
-            request.idempotencyKey,
-          );
-          if (cachedRetry) {
-            return this.handleIdempotentReplay(cachedRetry, request);
-          }
+        const raced = await this.resolveIdempotencyRace(request, error);
+        if (raced) {
+          return mapTransferResultToDto(raced);
         }
 
         if (isDomainError(error)) {
-          await this.auditFailure(request, error, amount);
+          await this.writeTransferFailureAudit(request, error, amount);
         }
         throw error;
       }
@@ -208,12 +206,30 @@ export class TransfersService {
     });
   }
 
-  private isDeadlock(error: unknown): boolean {
-    return (
-      error instanceof Prisma.PrismaClientKnownRequestError &&
-      error.code === "P2010" &&
-      (error.meta as { code?: string } | undefined)?.code === "40P01"
+  private async resolveIdempotencyRace(
+    request: TransferRequest,
+    error: unknown,
+  ): Promise<TransferResult | null> {
+    if (!isPrismaUniqueViolation(error)) {
+      return null;
+    }
+
+    const existing = await this.transactionRepository.findByIdempotencyKey(
+      this.prisma,
+      request.idempotencyKey,
     );
+    if (existing) {
+      return this.buildResultFromTransaction(this.prisma, existing, true);
+    }
+
+    const cachedRetry = await this.idempotencyReplay.findCached(
+      request.idempotencyKey,
+    );
+    if (cachedRetry) {
+      return this.idempotencyReplay.replayTransfer(cachedRetry, request);
+    }
+
+    return null;
   }
 
   private validateRequestShape(request: TransferRequest): void {
@@ -226,32 +242,6 @@ export class TransfersService {
     if (!request.fromAccountId?.trim() || !request.toAccountId?.trim()) {
       throw invalidRequest("fromAccountId and toAccountId are required");
     }
-  }
-
-  private async handleIdempotentReplay(
-    cached: { operation: string; responseBody: unknown },
-    request: TransferRequest,
-  ): Promise<TransferResult> {
-    if (cached.operation !== "transfer") {
-      throw idempotencyConflict();
-    }
-
-    const body = cached.responseBody as TransferResult | null;
-    if (!body?.transaction) {
-      throw idempotencyConflict();
-    }
-
-    const sameBody =
-      body.transaction.fromAccountId === request.fromAccountId &&
-      body.transaction.toAccountId === request.toAccountId &&
-      body.transaction.amount ===
-        parseAndValidateAmount(request.amount).toFixed(2);
-
-    if (!sameBody) {
-      throw idempotencyConflict();
-    }
-
-    return { ...body, idempotentReplay: true };
   }
 
   private async buildResultFromTransaction(
@@ -282,13 +272,13 @@ export class TransfersService {
     };
   }
 
-  private async auditFailure(
+  private writeTransferFailureAudit(
     request: TransferRequest,
     error: DomainError,
     amount?: Decimal,
   ): Promise<void> {
-    try {
-      await this.auditRepository.createStandalone({
+    return this.auditWriter.writeFailure(
+      {
         operationType: "TRANSFER",
         outcome: "failure",
         requestId: request.requestId,
@@ -303,9 +293,8 @@ export class TransfersService {
           toAccountId: request.toAccountId,
           amount: request.amount,
         },
-      });
-    } catch (auditError) {
-      console.error("Failed to write transfer failure audit event", auditError);
-    }
+      },
+      "transfer failure",
+    );
   }
 }

@@ -1,6 +1,40 @@
 # Ledger Banking System
 
-A take-home banking / ledger application with concurrent-safe transfers, compensating reversals, and append-only audit logging. Built with **NestJS**, **PostgreSQL**, **Prisma**, and a **React** web UI.
+A take-home banking / ledger application with concurrent-safe transfers, compensating reversals, and append-only audit logging.
+
+## Tech stack
+
+| Layer | Technology | Purpose |
+|-------|------------|---------|
+| **Backend** | [NestJS](https://nestjs.com/) 11 | REST API, modules, dependency injection |
+| **Language** | TypeScript 5 | End-to-end type safety |
+| **Database** | [PostgreSQL](https://www.postgresql.org/) 16 | ACID transactions, row locking (`FOR UPDATE`) |
+| **ORM** | [Prisma](https://www.prisma.io/) 6 | Schema, migrations, query layer |
+| **Money** | [decimal.js](https://mikemcl.github.io/decimal.js/) | Precise decimal arithmetic (no float bugs) |
+| **Validation** | class-validator + class-transformer | Request DTO validation |
+| **Frontend** | [React](https://react.dev/) 19 | Web UI |
+| **Build** | [Vite](https://vitejs.dev/) 6 | Fast dev server and production bundling |
+| **State / API** | [Redux Toolkit](https://redux-toolkit.js.org/) + RTK Query | Server state, caching, tag invalidation |
+| **Runtime** | Node.js 20+ | Server runtime |
+
+### Infrastructure (deployment)
+
+| Service | Role |
+|---------|------|
+| [Neon](https://neon.tech) | Managed PostgreSQL |
+| [Render](https://render.com) | Backend API hosting |
+| [Vercel](https://vercel.com) | Frontend static hosting |
+| Docker Compose | Optional local PostgreSQL |
+
+### Project structure
+
+```
+LedgerBankingSystem/
+├── src/                 # NestJS backend (API, services, repositories)
+├── client/              # React + Vite frontend
+├── prisma/              # Schema and SQL migrations
+└── docker-compose.yml   # Local Postgres (optional)
+```
 
 ## Quick start
 
@@ -261,6 +295,33 @@ await Promise.all(
   ),
 );
 ```
+
+## Code organization
+
+### Backend (`src/`)
+
+| Layer | Responsibility | Example |
+|-------|----------------|---------|
+| `*/dto/` | HTTP request/response shapes | `transfer-response.dto.ts`, `create-account.dto.ts` |
+| `*/mappers/` | Domain → API mapping | `transfer.mapper.ts`, `account.mapper.ts` |
+| `*.service.ts` | Business logic | `transfers.service.ts` |
+| `repositories/` | Database access | `account.repository.ts` |
+| `models/` | Domain types & errors | `money-movement.ts`, `errors.ts` |
+| `common/` | Cross-cutting concerns | `AuditWriterService`, `IdempotencyReplayService`, decorators, filters |
+
+See [ARCHITECTURE.md](./ARCHITECTURE.md) for request flow, concurrency, and idempotency design.
+
+### Frontend (`client/src/`)
+
+| Layer | Responsibility | Example |
+|-------|----------------|---------|
+| `features/*/api/` | RTK Query endpoints | `accountsApi.ts` |
+| `features/*/components/` | Feature UI | `TransferForm.tsx` |
+| `shared/components/` | Reusable UI | `StatusBadge`, `CardToolbar` |
+| `shared/utils/` | Pure helpers | `getErrorMessage`, `formatMoney` |
+| `shared/constants/` | Shared strings & enums | `messages.ts`, `status.ts` |
+
+Import paths use the `@/` alias (maps to `client/src/`).
 
 ## Frontend
 

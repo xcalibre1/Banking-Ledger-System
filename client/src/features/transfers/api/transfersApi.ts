@@ -1,6 +1,6 @@
-import { baseApi } from "../../../app/api/baseApi";
-import { TAG_TYPES } from "../../../app/api/tags";
-import type { TransferRequest, TransferResult } from "../../../shared/types";
+import { baseApi } from "@/app/api/baseApi";
+import { TAG_TYPES } from "@/app/api/tags";
+import type { TransferRequest, TransferResult } from "@/shared/types";
 
 export const transfersApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({

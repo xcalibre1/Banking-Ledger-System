@@ -1,18 +1,8 @@
 import { useState } from "react";
-import { useCreateAccountMutation } from "../api/accountsApi";
-import { Alert } from "../../../shared/components/Alert";
-
-function getErrorMessage(error: unknown): string {
-  if (
-    typeof error === "object" &&
-    error !== null &&
-    "message" in error &&
-    typeof error.message === "string"
-  ) {
-    return error.message;
-  }
-  return "Failed to create account";
-}
+import { useCreateAccountMutation } from "@/features/accounts/api/accountsApi";
+import { Alert } from "@/shared/components/Alert";
+import { formatMoney } from "@/shared/utils/formatMoney";
+import { getErrorMessage } from "@/shared/utils/getErrorMessage";
 
 export function CreateAccountForm() {
   const [name, setName] = useState("");
@@ -29,11 +19,14 @@ export function CreateAccountForm() {
         name,
         initialBalance: initialBalance || undefined,
       }).unwrap();
-      setSuccess(`Created account "${account.name}" with $${account.balance}`);
+
+      setSuccess(
+        `Created account "${account.name}" with ${formatMoney(account.balance)}`,
+      );
       setName("");
       setInitialBalance("100.00");
     } catch {
-      // Error surfaced via RTK Query `error` state.
+      // RTK Query surfaces errors via `error` state.
     }
   }
 
@@ -60,7 +53,12 @@ export function CreateAccountForm() {
             placeholder="100.00"
           />
         </div>
-        {error && <Alert variant="error" message={getErrorMessage(error)} />}
+        {error && (
+          <Alert
+            variant="error"
+            message={getErrorMessage(error, "Failed to create account")}
+          />
+        )}
         {success && <Alert variant="success" message={success} />}
         <button type="submit" className="btn btn-primary" disabled={isLoading}>
           {isLoading ? "Creating…" : "Create account"}

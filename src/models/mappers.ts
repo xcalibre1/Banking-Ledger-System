@@ -1,7 +1,7 @@
 import type { Transaction } from "@prisma/client";
 import { toDecimal } from "../lib/money";
 import type { Account } from "./account";
-import type { MoneyMovement } from "./reversal";
+import type { MoneyMovement } from "./money-movement";
 
 export function mapAccount(record: import("@prisma/client").Account): Account {
   return {

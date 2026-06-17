@@ -1,9 +1,9 @@
-import { baseApi } from "../../../app/api/baseApi";
-import { TAG_TYPES } from "../../../app/api/tags";
+import { baseApi } from "@/app/api/baseApi";
+import { TAG_TYPES } from "@/app/api/tags";
 import type {
   ReverseResult,
   TransactionListResponse,
-} from "../../../shared/types";
+} from "@/shared/types";
 
 interface ReverseTransactionRequest {
   transactionId: string;

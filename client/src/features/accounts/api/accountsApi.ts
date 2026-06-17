@@ -1,10 +1,10 @@
-import { baseApi } from "../../../app/api/baseApi";
-import { TAG_TYPES } from "../../../app/api/tags";
+import { baseApi } from "@/app/api/baseApi";
+import { TAG_TYPES } from "@/app/api/tags";
 import type {
   Account,
   AccountsListResponse,
   CreateAccountRequest,
-} from "../../../shared/types";
+} from "@/shared/types";
 
 export const accountsApi = baseApi.injectEndpoints({
   endpoints: (builder) => ({
