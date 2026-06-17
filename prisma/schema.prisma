@@ -1,0 +1,141 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+enum AccountStatus {
+  active
+  closed
+}
+
+enum TransactionType {
+  transfer
+  deposit
+  withdrawal
+  reversal
+}
+
+enum TransactionStatus {
+  pending
+  completed
+  failed
+  reversed
+}
+
+enum LedgerDirection {
+  debit
+  credit
+}
+
+enum AuditOutcome {
+  success
+  failure
+}
+
+enum IdempotencyOperation {
+  transfer
+  reverse
+  deposit
+  withdrawal
+}
+
+model Account {
+  id        String        @id @default(uuid()) @db.Uuid
+  name      String
+  balance   Decimal       @default(0) @db.Decimal(19, 4)
+  status    AccountStatus @default(active)
+  createdAt DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+
+  ledgerEntries           LedgerEntry[]
+  transactionsFrom        Transaction[] @relation("TransactionFromAccount")
+  transactionsTo          Transaction[] @relation("TransactionToAccount")
+  auditEventsFrom         AuditEvent[]  @relation("AuditEventFromAccount")
+  auditEventsTo           AuditEvent[]  @relation("AuditEventToAccount")
+
+  @@map("accounts")
+}
+
+model Transaction {
+  id                    String            @id @default(uuid()) @db.Uuid
+  type                  TransactionType
+  fromAccountId         String?           @map("from_account_id") @db.Uuid
+  toAccountId           String?           @map("to_account_id") @db.Uuid
+  amount                Decimal           @db.Decimal(19, 4)
+  status                TransactionStatus @default(pending)
+  idempotencyKey        String?           @unique @map("idempotency_key")
+  reversesTransactionId String?           @unique @map("reverses_transaction_id") @db.Uuid
+  failureReason         String?           @map("failure_reason")
+  createdAt             DateTime          @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt           DateTime?         @map("completed_at") @db.Timestamptz(6)
+
+  fromAccount         Account?       @relation("TransactionFromAccount", fields: [fromAccountId], references: [id])
+  toAccount           Account?       @relation("TransactionToAccount", fields: [toAccountId], references: [id])
+  reversesTransaction Transaction?   @relation("TransactionReversal", fields: [reversesTransactionId], references: [id])
+  reversedBy          Transaction?   @relation("TransactionReversal")
+  ledgerEntries       LedgerEntry[]
+  auditEvents         AuditEvent[]
+
+  @@index([fromAccountId, createdAt])
+  @@index([toAccountId, createdAt])
+  @@index([status])
+  @@map("transactions")
+}
+
+model LedgerEntry {
+  id            String          @id @default(uuid()) @db.Uuid
+  transactionId String          @map("transaction_id") @db.Uuid
+  accountId     String          @map("account_id") @db.Uuid
+  direction     LedgerDirection
+  amount        Decimal         @db.Decimal(19, 4)
+  createdAt     DateTime        @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  transaction Transaction @relation(fields: [transactionId], references: [id])
+  account     Account     @relation(fields: [accountId], references: [id])
+
+  @@index([accountId, createdAt])
+  @@index([transactionId])
+  @@map("ledger_entries")
+}
+
+model AuditEvent {
+  id              String       @id @default(uuid()) @db.Uuid
+  operationType   String       @map("operation_type")
+  outcome         AuditOutcome
+  fromAccountId   String?      @map("from_account_id") @db.Uuid
+  toAccountId     String?      @map("to_account_id") @db.Uuid
+  amount          Decimal?     @db.Decimal(19, 4)
+  transactionId   String?      @map("transaction_id") @db.Uuid
+  idempotencyKey  String?      @map("idempotency_key")
+  requestId       String       @map("request_id")
+  errorCode       String?      @map("error_code")
+  errorMessage    String?      @map("error_message")
+  payload         Json?
+  createdAt       DateTime     @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  fromAccount Account?     @relation("AuditEventFromAccount", fields: [fromAccountId], references: [id])
+  toAccount   Account?     @relation("AuditEventToAccount", fields: [toAccountId], references: [id])
+  transaction Transaction? @relation(fields: [transactionId], references: [id])
+
+  @@index([createdAt])
+  @@index([requestId])
+  @@index([idempotencyKey])
+  @@index([operationType, outcome])
+  @@map("audit_events")
+}
+
+model IdempotencyKey {
+  key            String               @id
+  operation      IdempotencyOperation
+  responseStatus Int                  @map("response_status")
+  responseBody   Json                 @map("response_body")
+  createdAt      DateTime             @default(now()) @map("created_at") @db.Timestamptz(6)
+
+  @@index([createdAt])
+  @@map("idempotency_keys")
+}
