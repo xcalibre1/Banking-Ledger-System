@@ -5,9 +5,9 @@ import {
   useReverseTransactionMutation,
 } from "../api/transactionsApi";
 import { Alert } from "../../../shared/components/Alert";
+import { StatusBadge } from "../../../shared/components/StatusBadge";
 import { accountLabel } from "../../../shared/utils/accountLabel";
 import { newIdempotencyKey } from "../../../shared/utils/idempotency";
-import { statusClass } from "../../../shared/utils/statusClass";
 
 function getErrorMessage(error: unknown): string {
   if (
@@ -19,6 +19,13 @@ function getErrorMessage(error: unknown): string {
     return error.message;
   }
   return "Request failed";
+}
+
+function transactionItemClass(status: string): string {
+  const normalized = status.toLowerCase();
+  const allowed = ["completed", "reversed", "failed", "pending"];
+  const variant = allowed.includes(normalized) ? normalized : "failed";
+  return `transaction-item transaction-item--${variant}`;
 }
 
 export function TransactionHistory() {
@@ -88,38 +95,48 @@ export function TransactionHistory() {
       ) : (
         <div className="transaction-list">
           {transactions.map((transaction) => (
-            <article key={transaction.id} className="transaction-item">
-              <div className="transaction-meta">
-                <div>
+            <article
+              key={transaction.id}
+              className={transactionItemClass(transaction.status)}
+            >
+              <div className="transaction-main">
+                <div className="transaction-details">
                   <div className="transaction-amount">
                     ${transaction.amount}
                   </div>
-                  <div className="muted">
-                    {accountLabel(
-                      accounts,
-                      transaction.fromAccountId,
-                      transaction.fromAccountName,
-                    )}{" "}
-                    →{" "}
-                    {accountLabel(
-                      accounts,
-                      transaction.toAccountId,
-                      transaction.toAccountName,
-                    )}
+                  <div className="transaction-route">
+                    <span>
+                      {accountLabel(
+                        accounts,
+                        transaction.fromAccountId,
+                        transaction.fromAccountName,
+                      )}
+                    </span>
+                    <span className="transaction-route__arrow" aria-hidden="true">
+                      →
+                    </span>
+                    <span>
+                      {accountLabel(
+                        accounts,
+                        transaction.toAccountId,
+                        transaction.toAccountName,
+                      )}
+                    </span>
                   </div>
                 </div>
-                <span className={statusClass(transaction.status)}>
-                  {transaction.status}
-                </span>
+                <StatusBadge status={transaction.status} />
               </div>
-              <div className="row-actions">
-                <span className="muted">
+              <div className="transaction-footer">
+                <time
+                  className="transaction-date"
+                  dateTime={transaction.createdAt}
+                >
                   {new Date(transaction.createdAt).toLocaleString()}
-                </span>
+                </time>
                 {transaction.status === "completed" && (
                   <button
                     type="button"
-                    className="btn btn-danger"
+                    className="btn btn-danger btn-sm"
                     disabled={reversingId === transaction.id}
                     onClick={() => void handleReverse(transaction.id)}
                   >

@@ -1,5 +1,6 @@
 import { useGetAccountsQuery } from "../api/accountsApi";
 import { Alert } from "../../../shared/components/Alert";
+import { StatusBadge } from "../../../shared/components/StatusBadge";
 
 function getErrorMessage(error: unknown): string {
   if (
@@ -41,9 +42,9 @@ export function AccountList() {
         <ul className="account-list">
           {accounts.map((account) => (
             <li key={account.id} className="account-item">
-              <div>
+              <div className="account-item__info">
                 <strong>{account.name}</strong>
-                <span>{account.status}</span>
+                <StatusBadge status={account.status} kind="account" />
               </div>
               <div className="balance">${account.balance}</div>
             </li>

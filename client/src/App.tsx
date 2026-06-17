@@ -8,10 +8,11 @@ export default function App() {
   return (
     <div className="app">
       <header className="app-header">
+        <p className="app-header__eyebrow">Banking ledger</p>
         <h1>Ledger Banking</h1>
         <p>
           Transfer funds between accounts with concurrency-safe ledger
-          operations.
+          operations, full audit trail, and idempotent reversals.
         </p>
       </header>
 
